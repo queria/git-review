@@ -794,18 +794,29 @@ def list_reviews(remote):
         print("No pending reviews")
         return
 
-    REVIEW_FIELDS = ('number', 'branch', 'subject')
+    REVIEW_FIELDS = ('number', 'branch', 'owner.name', 'subject')
     FIELDS = range(len(REVIEW_FIELDS))
     if check_color_support():
-        review_field_color = (colors.yellow, colors.green, "")
+        review_field_color = (colors.yellow, colors.green, "", "")
         color_reset = colors.reset
     else:
-        review_field_color = ("", "", "")
+        review_field_color = ("", "", "", "")
         color_reset = ""
-    review_field_format = ["%*s", "%*s", "%*s"]
-    review_field_justify = [+1, +1, -1]  # +1 is justify to right
+    review_field_format = ["%*s", "%*s", "%*s", "%*s"]
+    review_field_justify = [+1, +1, +1, -1]  # +1 is justify to right
 
-    review_list = [[r[f] for f in REVIEW_FIELDS] for r in reviews]
+    review_list = []
+    for review in reviews:
+        field_values = []
+        for field in REVIEW_FIELDS:
+            fields = field.split('.')
+            val = review
+            for sub_field in fields:
+                val = val[sub_field]
+            field_values.append(val)
+        review_list.append(field_values)
+
+    # review_list = [[r[f] for f in REVIEW_FIELDS] for r in reviews]
     review_field_width = dict()
     # assume last field is longest and may exceed the console width in which
     # case using the maximum value will result in extra blank lines appearing
@@ -837,6 +848,78 @@ def list_reviews(remote):
     print("Found %d items for review" % len(reviews))
 
     return 0
+
+
+def flatten_dict(dict_):
+    flattened = {}
+    sep = '_'
+    for key, val in dict_.iteritems():
+        if isinstance(val, dict):
+            for subkey, val in flatten_dict(val).iteritems():
+                flattened[key + sep + subkey] = val
+        else:
+            flattened[key] = val
+    return flattened
+
+
+def show_review(remote, change):
+    remote_url = get_remote_url(remote)
+    reviews = query_reviews(remote_url, change=change,
+                            exception=CannotQueryOpenChangesets,
+                            parse_exc=CannotParseOpenChangesets)
+    review = reviews[0]
+
+    #if check_color_support():
+    #    review_field_color = (colors.yellow, colors.green, "", "")
+    #    color_reset = colors.reset
+    #else:
+    #    review_field_color = ("", "", "", "")
+    #    color_reset = ""
+    review_info = flatten_dict(review)
+
+    review_info['votes'] = []
+    if 'currentPatchSet_approvals' not in review_info:
+        review_info['votes'].append('-no-current-ps-')
+    for appr in review_info['currentPatchSet_approvals']:
+        review_info['votes'].append('  %s: %s%+d' % (
+            appr['by']['name'], appr['type'], int(appr['value'])))
+    review_info['votes'] = '\n  '.join(review_info['votes'])
+
+    print(('{subject}\n'
+
+           ' {status} patch for {project}/{branch} with topic {topic}\n'
+
+           ' by {owner_name} <{owner_email}>, updated {lastUpdated}'
+           ', created {createdOn}\n'
+
+           ' current patchset {currentPatchSet_number}'
+           ' by {currentPatchSet_uploader_name}'
+           ' created {currentPatchSet_createdOn}\n'
+
+           ' votes:\n'
+           '  {votes}'
+          ).format(**review_info))
+
+    #print('%s' % review['subject'])
+    #print(' By %s <%s>, updated %s, created %s' % (
+    #    review['owner']['name'],
+    #    review['owner']['email'],
+    #    review['lastUpdated'],
+    #    review['createdOn'],
+    #))
+    #print(' %s patch for %s/%s with topic %s' % (
+    #    review['status'],
+    #    review['project'], review['branch'],
+    #    review['topic'],
+    #))
+    #print(' Current patchset %s by %s created %s' % (
+    #    review['currentPatchSet']['number'],
+    #    review['currentPatchSet']['uploader']['name'],
+    #    review['currentPatchSet']['createdOn'],
+    #))
+
+    import pprint
+    pprint.pprint(review_info)
 
 
 class CannotQueryPatchSet(CommandFailed):
@@ -1081,7 +1164,8 @@ def main():
 
     fetch = parser.add_mutually_exclusive_group()
     fetch.set_defaults(download=False, compare=False, cherrypickcommit=False,
-                       cherrypickindicate=False, cherrypickonly=False)
+                       cherrypickindicate=False, cherrypickonly=False,
+                       query=False)
     fetch.add_argument("-d", "--download", dest="changeidentifier",
                        action=DownloadFlag, metavar="CHANGE",
                        const="download",
@@ -1125,6 +1209,10 @@ def main():
                              "master on successful submission")
     parser.add_argument("-l", "--list", dest="list", action="store_true",
                         help="List available reviews for the current project")
+    parser.add_argument("-q", "--query",
+                        action=DownloadFlag, metavar="CHANGE",
+                        dest="changeidentifier", const="query",
+                        help="Query for detailed information about change")
     parser.add_argument("-y", "--yes", dest="yes", action="store_true",
                         help="Indicate that you do, in fact, understand if "
                              "you are submitting more than one patch")
@@ -1181,6 +1269,9 @@ def main():
                  config['hostname'], config['port'], config['project'])
 
     if options.changeidentifier:
+        if options.query:
+            show_review(remote, options.changeidentifier)
+            return
         if options.compare:
             compare_review(options.changeidentifier,
                            branch, remote, options.rebase)
